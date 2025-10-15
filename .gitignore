@@ -4,3 +4,10 @@
 build*
 cmake-build*
 .vs
+
+*.zip
+*.zip.*
+
+Vulkan-ValidationLayers-*/
+
+vk_mem_alloc.h
