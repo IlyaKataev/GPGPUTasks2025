@@ -64,11 +64,21 @@ void run(int argc, char** argv)
         // Запускаем кернел, с указанием размера рабочего пространства и передачей всех аргументов
         // Если хотите - можете удалить ветвление здесь и оставить только тот код который соответствует вашему выбору API
         if (context.type() == gpu::Context::TypeOpenCL) {
-            // TODO
-            throw std::runtime_error(CODE_IS_NOT_IMPLEMENTED);
-            // ocl_fill_with_zeros.exec();
-            // ocl_sum_reduction.exec();
-            // ocl_prefix_accumulation.exec();
+            ocl_fill_with_zeros.exec(gpu::WorkSize(GROUP_SIZE, n), prefix_sum_accum_gpu, n);
+            ocl_prefix_accumulation.exec(gpu::WorkSize(GROUP_SIZE, n), input_gpu, prefix_sum_accum_gpu, n, 0);
+
+            gpu::gpu_mem_32u* cur_reduction_src = &input_gpu;
+            gpu::gpu_mem_32u* next_reduction_dst = &buffer1_pow2_sum_gpu;
+            unsigned int current_size = n;
+
+            for (unsigned int pow2 = 1; (1u << pow2) < n; ++pow2) {
+                unsigned int next_size = (current_size + 1) / 2;
+                ocl_sum_reduction.exec(gpu::WorkSize(GROUP_SIZE, next_size), *cur_reduction_src, *next_reduction_dst, current_size);
+                ocl_prefix_accumulation.exec(gpu::WorkSize(GROUP_SIZE, n), *next_reduction_dst, prefix_sum_accum_gpu, n, pow2);
+                cur_reduction_src = next_reduction_dst;
+                next_reduction_dst = (next_reduction_dst == &buffer1_pow2_sum_gpu) ? &buffer2_pow2_sum_gpu : &buffer1_pow2_sum_gpu;
+                current_size = next_size;
+            }
         } else if (context.type() == gpu::Context::TypeCUDA) {
             // TODO
             throw std::runtime_error(CODE_IS_NOT_IMPLEMENTED);
