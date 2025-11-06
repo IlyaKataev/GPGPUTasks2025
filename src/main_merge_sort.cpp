@@ -34,6 +34,7 @@ void run(int argc, char** argv)
     //          кроме того есть debugPrintfEXT(...) для вывода в консоль с видеокарты
     //          кроме того используемая библиотека поддерживает rassert-проверки (своеобразные инварианты с уникальным числом) на видеокарте для Vulkan
 
+    ocl::KernelSource ocl_localMergeSort(ocl::getLocalMergeSort());
     ocl::KernelSource ocl_mergeSort(ocl::getMergeSort());
 
     avk2::KernelSource vk_mergeSort(avk2::getMergeSort());
@@ -76,19 +77,21 @@ void run(int argc, char** argv)
         std::cout << "CPU std::sort effective RAM bandwidth: " << memory_size_gb / t.elapsed() << " GB/s (" << n / 1000 / 1000 / t.elapsed() << " uint millions/s)" << std::endl;
     }
 
+    unsigned int n_padded = ((n + TILE_SIZE - 1) / TILE_SIZE) * TILE_SIZE;
+    std::vector<unsigned int> as_padded(n_padded, std::numeric_limits<unsigned int>::max());
+    for (size_t i = 0; i < n; ++i) {
+        as_padded[i] = as[i];
+    }
+
     // Аллоцируем буферы в VRAM
-    gpu::gpu_mem_32u input_gpu(n);
-    gpu::gpu_mem_32u buffer1_gpu(n), buffer2_gpu(n); // TODO это просто шаблонка, можете переименовать эти буферы, сделать другого размера/типа, удалить часть, добавить новые
-    gpu::gpu_mem_32u buffer_output_gpu(n);
+    gpu::gpu_mem_32u input_gpu(n_padded);
+    gpu::gpu_mem_32u buffer1_gpu(n_padded);
+    gpu::gpu_mem_32u buffer2_gpu(n_padded);
+
+    gpu::gpu_mem_32u* output_gpu;
 
     // Прогружаем входные данные по PCI-E шине: CPU RAM -> GPU VRAM
-    input_gpu.writeN(as.data(), n);
-    // Советую занулить (или еще лучше - заполнить какой-то уникальной константой, например 255) все буферы
-    // В некоторых случаях это ускоряет отладку, но обратите внимание, что fill реализован через копию множества нулей по PCI-E, то есть он очень медленный
-    // Если вам нужно занулять буферы в процессе вычислений - используйте кернел который это сделает (см. кернел fill_buffer_with_zeros)
-    buffer1_gpu.fill(255);
-    buffer2_gpu.fill(255);
-    buffer_output_gpu.fill(255);
+    input_gpu.writeN(as_padded.data(), n_padded);
 
     // Запускаем кернел (несколько раз и с замером времени выполнения)
     std::vector<double> times;
@@ -98,8 +101,18 @@ void run(int argc, char** argv)
         // Запускаем кернел, с указанием размера рабочего пространства и передачей всех аргументов
         // Если хотите - можете удалить ветвление здесь и оставить только тот код который соответствует вашему выбору API
         if (context.type() == gpu::Context::TypeOpenCL) {
-            // TODO
-            throw std::runtime_error(CODE_IS_NOT_IMPLEMENTED);
+            buffer1_gpu.writeN(as_padded.data(), n_padded);
+            gpu::gpu_mem_32u* src = &buffer1_gpu;
+            gpu::gpu_mem_32u* dst = &buffer2_gpu;
+
+            ocl_localMergeSort.exec(gpu::WorkSize(GROUP_SIZE, n_padded / N_ELEMENTS_PER_THREAD), *src, *dst);
+            std::swap(src, dst);
+
+            for (unsigned int k = TILE_SIZE; k < n_padded; k <<= 1) {
+                ocl_mergeSort.exec(gpu::WorkSize(GROUP_SIZE, n_padded), *src, *dst, k, n_padded);
+                std::swap(src, dst);
+            }
+            output_gpu = src;
         } else if (context.type() == gpu::Context::TypeCUDA) {
             // TODO
             throw std::runtime_error(CODE_IS_NOT_IMPLEMENTED);
@@ -119,7 +132,8 @@ void run(int argc, char** argv)
     std::cout << "GPU merge-sort median effective VRAM bandwidth: " << memory_size_gb / stats::median(times) << " GB/s (" << n / 1000 / 1000 / stats::median(times) << " uint millions/s)" << std::endl;
 
     // Считываем результат по PCI-E шине: GPU VRAM -> CPU RAM
-    std::vector<unsigned int> gpu_sorted = buffer_output_gpu.readVector();
+    std::vector<unsigned int> gpu_sorted(n);
+    output_gpu->readN(gpu_sorted.data(), n);
 
     // Сверяем результат
     for (size_t i = 0; i < n; ++i) {
@@ -127,7 +141,8 @@ void run(int argc, char** argv)
     }
 
     // Проверяем что входные данные остались нетронуты (ведь мы их переиспользуем от итерации к итерации)
-    std::vector<unsigned int> input_values = input_gpu.readVector();
+    std::vector<unsigned int> input_values(n);
+    input_gpu.readN(input_values.data(), n);
     for (size_t i = 0; i < n; ++i) {
         rassert(input_values[i] == as[i], 6573452432, input_values[i], as[i]);
     }

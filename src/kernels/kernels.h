@@ -10,6 +10,7 @@ void merge_sort(const gpu::WorkSize &workSize, const gpu::gpu_mem_32u &input_dat
 namespace ocl {
 const ProgramBinaries& getAplusB();
 
+const ProgramBinaries& getLocalMergeSort();
 const ProgramBinaries& getMergeSort();
 }
 
