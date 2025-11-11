@@ -32,7 +32,7 @@ __kernel void sparse_csr_matrix_vector_multiplication(
     local_sums[local_id] = sum;
     barrier(CLK_LOCAL_MEM_FENCE);
     for (uint reduction_step = local_size >> 1; reduction_step != 0; reduction_step >>= 1) {
-        if (local_id + reduction_step < local_size) {
+        if (local_id < reduction_step) {
             local_sums[local_id] += local_sums[local_id + reduction_step];
         }
         barrier(CLK_LOCAL_MEM_FENCE);
