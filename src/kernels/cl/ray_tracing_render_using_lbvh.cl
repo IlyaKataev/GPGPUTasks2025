@@ -18,20 +18,68 @@ static inline bool bvh_closest_hit(
     const float3              orig,
     const float3              dir,
     __global const BVHNodeGPU* nodes,
-    __global const uint*      leafTriIndices,
-    uint                      nfaces,
+    __global const uint*      leaf_indices,
+    uint                      n_faces,
     __global const float*     vertices,
     __global const uint*      faces,
-    float                     tMin,
-    __private float*          outT, // сюда нужно записать t рассчитанный в intersect_ray_triangle(..., t, u, v)
-    __private int*            outFaceId,
-    __private float*          outU, // сюда нужно записать u рассчитанный в intersect_ray_triangle(..., t, u, v)
-    __private float*          outV) // сюда нужно записать v рассчитанный в intersect_ray_triangle(..., t, u, v)
+    float                     t_min,
+    __private float*          t_out, // сюда нужно записать t рассчитанный в intersect_ray_triangle(..., t, u, v)
+    __private int*            out_face_id,
+    __private float*          u_out, // сюда нужно записать u рассчитанный в intersect_ray_triangle(..., t, u, v)
+    __private float*          v_out) // сюда нужно записать v рассчитанный в intersect_ray_triangle(..., t, u, v)
 {
-    const int rootIndex = 0;
-    const int leafStart = (int)nfaces - 1;
+    const int root_index = 0;
+    const int leaf_start = (int)n_faces - 1;
+    float t_closest = FLT_MAX;
+    int closest_face_id = -1;
+    float u_closest = 0.0f;
+    float v_closest = 0.0f;
+    int stack[64];
+    stack[0] = root_index;
+    int stack_idx = 1;
 
-    // TODO implement BVH travering (with stack, don't use recursion)
+    while (stack_idx > 0) {
+        --stack_idx;
+        int node_index = stack[stack_idx];
+        const BVHNodeGPU node = nodes[node_index];
+        float t_box_near, t_box_far;
+        bool hitbox = intersect_ray_aabb(orig, dir, node.aabb, t_min, t_closest, &t_box_near, &t_box_far);
+        if (!hitbox) {
+            continue;
+        }
+        bool is_leaf = (node_index >= leaf_start);
+        if (is_leaf) {
+            int leaf_offest = node_index - leaf_start;
+            uint tri_idx = leaf_indices[leaf_offest];
+            uint3 f = loadFace(faces, tri_idx);
+            float3 v0 = loadVertex(vertices, f.x);
+            float3 v1 = loadVertex(vertices, f.y);
+            float3 v2 = loadVertex(vertices, f.z);
+
+            float t, u, v;
+            if (intersect_ray_triangle(orig, dir, v0, v1, v2, t_min, t_closest, false, &t, &u, &v)) {
+                if (t < t_closest) {
+                    t_closest = t;
+                    closest_face_id = (int)tri_idx;
+                    u_closest = u;
+                    v_closest = v;
+                }
+            }
+        } else {
+            if (stack_idx + 2 <= 64) {
+                stack[stack_idx++] = node.rightChildIndex;
+                stack[stack_idx++] = node.leftChildIndex;
+            }
+        }
+    }
+
+    if (closest_face_id >= 0) {
+        *t_out = t_closest;
+        *out_face_id = closest_face_id;
+        *u_out = u_closest;
+        *v_out = v_closest;
+        return true;
+    }
 
     return false;
 }
@@ -43,14 +91,54 @@ static inline bool any_hit_from(
     __global const float*     vertices,
     __global const uint*      faces,
     __global const BVHNodeGPU* nodes,
-    __global const uint*      leafTriIndices,
-    uint                      nfaces,
+    __global const uint*      leaf_indices,
+    uint                      n_faces,
     int                       ignore_face)
 {
-    const int rootIndex = 0;
-    const int leafStart = (int)nfaces - 1;
+    const int root_index = 0;
+    const int leaf_start = (int)n_faces - 1;
+    const float t_min = 1e-4f;
+    const float tMax = FLT_MAX;
+    int stack[64];
+    stack[0] = root_index;
+    int stack_idx = 1;
 
-    // TODO implement BVH travering (with stack, don't use recursion)
+    while (stack_idx > 0) {
+        --stack_idx;
+        int node_index = stack[stack_idx];
+        const BVHNodeGPU node = nodes[node_index];
+
+        float t_box_near, t_box_far;
+        if (!intersect_ray_aabb(orig, dir, node.aabb, t_min, tMax, &t_box_near, &t_box_far)) {
+            continue;
+        }
+
+        bool is_leaf = (node_index >= leaf_start);
+
+        if (is_leaf) {
+            int leaf_offest = node_index - leaf_start;
+            uint tri_idx = leaf_indices[leaf_offest];
+
+            if ((int)tri_idx == ignore_face) {
+                continue;
+            }
+
+            uint3 f = loadFace(faces, tri_idx);
+            float3 v0 = loadVertex(vertices, f.x);
+            float3 v1 = loadVertex(vertices, f.y);
+            float3 v2 = loadVertex(vertices, f.z);
+
+            float t, u, v;
+            if (intersect_ray_triangle(orig, dir, v0, v1, v2, t_min, tMax, false, &t, &u, &v)) {
+                return true;
+            }
+        } else {
+            if (stack_idx + 2 <= 64) {
+                stack[stack_idx++] = node.rightChildIndex;
+                stack[stack_idx++] = node.leftChildIndex;
+            }
+        }
+    }
 
     return false;
 }
